@@ -4,7 +4,7 @@ use Test::More;
 use Mojolicious::Lite;
 use Test::Mojo;
 
-plugin 'Mojolicious-Plugin-GridFS';
+plugin 'GridFS';
 
 get '/' => sub {
   my $self = shift;
