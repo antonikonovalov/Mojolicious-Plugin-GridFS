@@ -1,12 +1,15 @@
 use Mojolicious::Lite;
-use Scalar::Util 'weaken';
+use lib '../lib';
+
+plugin 'GridFS';
+# use Scalar::Util 'weaken';
 
   # Emit "request" event early for requests that get upgraded to multipart
-hook after_build_tx => sub {
-	my $tx = shift;
-	weaken $tx;
-	$tx->req->content->on(upgrade => sub { $tx->emit('request') });
-};
+# hook after_build_tx => sub {
+# 	my $tx = shift;
+# 	weaken $tx;
+# 	$tx->req->content->on(upgrade => sub { $tx->emit('request') });
+# };
 
   # Upload form in DATA section
 get '/' => 'index';
@@ -48,15 +51,17 @@ __DATA__
 	<head>
 		<title>Streaming multipart upload</title>
 		<script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.0.6/angular.min.js"></script>
-		<script src="gridfs.js"></script>
-		<script src="files.js"></script>
+		<!-- <script src="gridfs.js"></script>
+			<script src="files.js"></script>
+		 -->
 	</head>
 	<body>
+
 		%= form_for upload => (enctype => 'multipart/form-data') => begin
-			%= file_field 'example'
+			<input name="example" type="file" multiple />
 			%= submit_button 'Upload'
 		% end
-		<div ng-controller="FilesCtrl">
+		<!--<div ng-controller="FilesCtrl">
 			<table>
 				<thead>
 				  	<tr>
@@ -71,7 +76,7 @@ __DATA__
 				  	</tr>
 				</tbody>
 			</table>
-		</div>
+		</div> -->
 	</body>
 </html>
 
