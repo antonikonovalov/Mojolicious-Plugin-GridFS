@@ -2,7 +2,8 @@ package Mojolicious::Plugin::GridFS;
 use Mojo::Base 'Mojolicious::Plugin';
 use Scalar::Util 'weaken';
 use Mango;
-use Mango::BSON 'bson_oid';
+use Mango::GridFS;
+# use Mango::BSON 'bson_oid';
 use Mojo::IOLoop;
 use Data::Dump qw/dump/;
 
@@ -10,14 +11,22 @@ our $VERSION = '0.01';
 
 has config => sub {+{}};
 
+has 'writer';
+has 'mango';
+has 'fs';
+
+
 sub register {
   	my ($p, $app, $config) = @_;
 
   	$config->{user} = $config->{user} || 'Anton';
   	$config->{pwd} = $config->{pwd} || 1234;
-  	$config->{db} = $config->{db} || 'fs';
+  	$config->{auth} = $config->{auth} || 0;
+  	$config->{db} = $config->{db} || 'mango';
   	$config->{url_base} = $config->{url_base} || 'fs';
   	$config->{route} = $config->{route} || $app->routes;
+
+  	$ENV{MOJO_MAX_MESSAGE_SIZE} = 1073741824;
 
   	$config->{crud_names} = $config->{crud_names} || {
 		create => 'upload',
@@ -42,17 +51,24 @@ sub register {
 		$tx->req->content->on(upgrade => sub { $tx->emit('request') });
 	});
 
-	$app->helper(mango => sub {
-		Mango->new("mongodb://".( ($p->config->{user} and $p->config->{pwd}) ?  $p->config->{user} . $p->config->{pwd} . '@' : '') . $p->config->{host}.':'. $p->config->{port} . '/' . $p->config->{db});
-	});
+	my $auth_srt = ( ( $p->config->{user} and $p->config->{pwd} ) ?  $p->config->{user} . $p->config->{pwd} . '@' : '' );
+	my $host = $p->config->{host}.':'. $p->config->{port};
 
-	$app->helper(fs => sub {
+	# this attr real need !!!!read - The reason for the attr approach is so that each child will init it's own MongoDB connection which is required by the MongoDB driver
+
+	$app->attr( db => sub { 
+    	Mango->new("mongodb://" . ( $p->config->{auth} ? $auth_srt : '' ) . $host . '/' . $p->config->{db} );
+    });
+
+	$app->helper( mango => sub { shift->app->db });
+
+	$app->helper( fs => sub {
 		$app->mango->db->gridfs;
 	});
 
 	#for Test
-	# my $writer = $gridfs->writer;
-	# $writer->filename('foo.txt')->content_type('text/plain')->metadata({foo => 'bar'});
+	# my $writer = $app->mango->db->gridfs->writer;
+	# $writer->filename('bar.txt')->content_type('text/plain')->metadata({foo => 'bar'});
 	# my $oid = $writer->write('hello ')->write('world!')->close;
 	# warn $oid;
 
@@ -69,45 +85,93 @@ sub register {
 }
 
 sub _create {
+	warn '______________create___________________';
 	my ($p,$self) = @_;
+
+
+	my @oid = ();
+	warn "STASH: ",  $self->stash('now_write_file');
+
+	# if ( $self->stash('now_write_file') ) {
+
+	#   		warn "__________close_writer___________";
+	#   		my $writer = $self->stash($self->stash('now_write_file'));
+
+	#   		my $oid = $writer->close( sub {
+	#   			my ($w, $oid) = @_;
+	#   			warn "_object id: $oid";
+	#   			push @oid, $oid;
+	#   			delete $self->stash->{$self->stash('now_write_file')};
+	#   			delete $self->stash->{now_write_file};
+	#   		});
+	#  }
 
 	# my $w = $self->mango->gridfs->writer;
 	# $w->filename('foo.txt')->content_type('text/plain')->metadata({foo => 'bar'});
 	# my $o = $w->write('hello ')->write('world!')->close;
 
 	# warn $o;
-	warn '_create';
 	# First invocation, subscribe to "part" event to find the right one
-	my ($writer, @oid) = ( 0, ());
 
 	return $self->req->content->on(part => sub {
 	  	my ($multi, $single) = @_;
 
-	  	if ($writer) {
-	  		warn "_close_write_ $writer";
-	  		$writer = 0;
-	  		# $writer->close(sub {
-	  		# 	my ($w, $oid) = @_;
-	  		# 	push @oid, $oid;
-	  		# 	warn "_object id: $oid";
-	  		# 	$writer = 0;
+	  	warn "__________________PART";
+
+	  	if ( $self->stash('now_write_file') ) {
+
+	  		warn "__________close_writer___________";
+	  		my $writer = $self->stash($self->stash('now_write_file'));
+
+	  		my $oid = $writer->close;#( sub {
+	  			# my ($w, $oid) = @_;
+	  			warn "_object id: $oid";
+	  			push @oid, $oid;
+	  			delete $self->stash->{$self->stash('now_write_file')};
+	  			delete $self->stash->{now_write_file};
 	  		# });
 	  	}
 
+	  	warn "_____________________________________________", $self->stash('now_write_file');
+
 	  	$single->on(body => sub {
 			my $single = shift;
+		
+			warn "__________________BODY";
+			# if ($single->headers->content_disposition =~ /filename="([^"]+)"/) {
+		 #  		warn "BODY ", $1;
+	  # 		}
+
+			# if ( $self->stash('now_write_file') ) {
+
+		 #  		warn "__________close_writer___________";
+		 #  		my $writer = $self->stash($self->stash('now_write_file'));
+
+		 #  		my $oid = $writer->close( sub {
+		 #  			my ($w, $oid) = @_;
+		 #  			warn "_object id: $oid";
+		 #  			push @oid, $oid;
+		 #  			delete $self->stash->{$self->stash('now_write_file')};
+		 #  			delete $self->stash->{now_write_file};
+		 #  		});
+		 #  	}
+
 
 			# Make sure we have the right part and replace "read" event
 			return unless $single->headers->content_disposition =~ /filename="([^"]+)"/;
+
 			$self->app->log->debug($1 . ' now read.');
-			$writer = $self->fs->writer->filename($1);
-			warn "WRITE OBJ: $writer";
+			$self->stash( now_write_file => $1);
+			$self->stash("$1" => $self->mango->db->gridfs->writer->filename($1)->content_type('text/plain')->metadata({foo => 'bar'}));
+			warn "WRITE OBJ: ", $self->stash($1);
 
 			$single->unsubscribe('read')->on(read => sub {
+				warn "__________________READ";
 		  		my ($single, $bytes) = @_;
-
 		  		#read every chunk
-		  		warn "WRITE NEXT CHUNCK: ",$writer->write($bytes);
+		  		my $writer = $self->stash($self->stash('now_write_file'));
+				warn "CURRENT WRITER IS CLOSED  FOR " . $self->stash('now_write_file') . "? - ", ( $writer->is_closed ? 'YES' : 'NO');
+		  		$writer->write($bytes);
 		  		# Log size of every chunk we receive
 		  		$self->app->log->debug(length($bytes) . ' bytes uploaded.');
 			});
@@ -118,8 +182,6 @@ sub _create {
 
 	warn "!!!!!!!FINISH!!!!!!!!", dump @oid;
 
-	# $self->render(json => {ids => \ @oid });
-
 	$self->render(text => 'Upload was successful.');
 }
 
@@ -129,20 +191,15 @@ sub _read {
 
 sub _list {
 	my ($p,$self) = @_;
-	warn "list";
 	$self->render_later;
 
+	#!!!!!!! non bloking !!!!!!!
 	$self->fs->list(sub {
 		my ($gridfs, $err, $names) = @_;
-		$self->render(json => $names);
+
+		$self->render(json => ($names ? { data  => { files => $names }, ok => 1 }:  { msg => {error => $err }, ok => 0 }) );
 	});
-
-	$self->render(json => $self->fs->list);
 }
-
-# sub _update {
-	
-# }
 
 sub _delete {
 	return 1;
