@@ -2,19 +2,13 @@ package Mojolicious::Plugin::GridFS;
 use Mojo::Base 'Mojolicious::Plugin';
 use Scalar::Util 'weaken';
 use Mango;
-use Mango::GridFS;
-# use Mango::BSON 'bson_oid';
+use Mango::BSON  qw/bson_oid/;
 use Mojo::IOLoop;
 use Data::Dump qw/dump/;
 
 our $VERSION = '0.01';
 
 has config => sub {+{}};
-
-has 'writer';
-has 'mango';
-has 'fs';
-
 
 sub register {
   	my ($p, $app, $config) = @_;
@@ -38,7 +32,7 @@ sub register {
 
 	$config->{host} = $config->{host} || 'localhost';
 	$config->{port} = $config->{port} || 27017;
-	$config->{max_connections} = $config->{max_connections} || 5;
+	$config->{max_connections} = $config->{max_connections} || 1000;
 
   	$p->config($config);
 
@@ -51,149 +45,196 @@ sub register {
 		$tx->req->content->on(upgrade => sub { $tx->emit('request') });
 	});
 
-	my $auth_srt = ( ( $p->config->{user} and $p->config->{pwd} ) ?  $p->config->{user} . $p->config->{pwd} . '@' : '' );
+	my $auth_srt = ( ( $p->config->{user} and $p->config->{pwd} ) ?  $p->config->{user} .':'. $p->config->{pwd} . '@' : '' );
 	my $host = $p->config->{host}.':'. $p->config->{port};
+	warn $auth_srt,'',$host;
 
 	# this attr real need !!!!read - The reason for the attr approach is so that each child will init it's own MongoDB connection which is required by the MongoDB driver
 
-	$app->attr( db => sub { 
-    	Mango->new("mongodb://" . ( $p->config->{auth} ? $auth_srt : '' ) . $host . '/' . $p->config->{db} );
+	$app->attr( mongodb => sub { 
+    	my $mango = Mango->new("mongodb://" . ( $p->config->{auth} ? $auth_srt : '' ) . $host . '/' . $p->config->{db} );
+    	$mango->max_connections($p->config->{max_connections}) if $p->config->{max_connections};
+    	$mango;
     });
 
-	$app->helper( mango => sub { shift->app->db });
+	$app->helper( mango => sub { shift->app->mongodb });
 
 	$app->helper( fs => sub {
 		$app->mango->db->gridfs;
 	});
 
-	#for Test
-	# my $writer = $app->mango->db->gridfs->writer;
-	# $writer->filename('bar.txt')->content_type('text/plain')->metadata({foo => 'bar'});
-	# my $oid = $writer->write('hello ')->write('world!')->close;
-	# warn $oid;
+  	$r->get("/" . $p->config->{url_base} . "/files" => sub {
+  		my $self = shift;
+  		$self->render_later;
+  		$p->_list($self);
+  	})->name($p->config->{crud_names}->{list});
 
-  	$r->get("/" . $p->config->{url_base} . "/files" => sub { $p->_list(shift) } )
-  		->name($p->config->{crud_names}->{list});
-  	$r->get("/" . $p->config->{url_base} . "/files/:object_id" => sub { $p->_read(shift) } )
-  		->name($p->config->{crud_names}->{read});
-  	$r->post("/" . $p->config->{url_base} . "/files" => sub { $p->_create(shift) } )
-  		->name($p->config->{crud_names}->{create});
-  	# $r->put("/$p->config->{url_base}/files/:object_id" => _update );
-  	$r->delete("/" . $p->config->{url_base} . "/files/:object_id" => sub { $p->_delete(shift) } )
-  		->name($p->config->{crud_names}->{delete});
+  	$r->get("/" . $p->config->{url_base} . "/files/:object_id" => sub {
+  		my $self = shift;
+  		$self->render_later;
+  		$p->_read($self);
+  	})->name($p->config->{crud_names}->{read});
+
+  	$r->post("/" . $p->config->{url_base} . "/files" => sub {
+  		my $self = shift;
+  		$self->render_later;
+  		$p->_create($self);
+  	})->name($p->config->{crud_names}->{create});
+
+  	$r->delete("/" . $p->config->{url_base} . "/files/:object_id" => sub {
+  		my $self = shift;
+  		$self->render_later;
+  		$p->_delete($self);
+  	})->name($p->config->{crud_names}->{delete});
 
 }
 
 sub _create {
-	warn '______________create___________________';
-	my ($p,$self) = @_;
+	my ($p,$c) = @_;
 
+	unless($c->stash('oids')) {
+		$c->stash(oids => []);
+	}
 
-	my @oid = ();
-	warn "STASH: ",  $self->stash('now_write_file');
+	$c->req->on(finish => sub {
+		my $req = shift;
 
-	# if ( $self->stash('now_write_file') ) {
+		my $writer = $c->stash($c->stash('now_write_file'));
 
-	#   		warn "__________close_writer___________";
-	#   		my $writer = $self->stash($self->stash('now_write_file'));
+		if ( $writer && !$writer->is_closed ) {
+			$writer->close(sub {
+	  			my ($w, ,$err, $oid) = @_;
 
-	#   		my $oid = $writer->close( sub {
-	#   			my ($w, $oid) = @_;
-	#   			warn "_object id: $oid";
-	#   			push @oid, $oid;
-	#   			delete $self->stash->{$self->stash('now_write_file')};
-	#   			delete $self->stash->{now_write_file};
-	#   		});
-	#  }
+	  			warn "_on_finish err in close : $err" if $err;
 
-	# my $w = $self->mango->gridfs->writer;
-	# $w->filename('foo.txt')->content_type('text/plain')->metadata({foo => 'bar'});
-	# my $o = $w->write('hello ')->write('world!')->close;
+	  			my $oids = $c->stash('oids');
 
-	# warn $o;
+	  			push (@$oids, {
+	  				_id => {
+	  					'$oid' => $oid
+	  				},
+  					filename => $w->filename,
+  					chunkSize => $w->chunk_size,
+  					contentType => $w->content_type,
+	  			});
+
+	  			delete $c->stash->{$c->stash('now_write_file')};
+				delete $c->stash->{now_write_file} if $c->stash->{now_write_file};
+				delete $c->stash->{oids};
+
+	  			$c->render(json => {
+					ok => 1,
+					data => $oids
+				});
+			});
+		}
+	});
+
 	# First invocation, subscribe to "part" event to find the right one
 
-	return $self->req->content->on(part => sub {
+	return $c->req->content->on(part => sub {
 	  	my ($multi, $single) = @_;
 
-	  	warn "__________________PART";
+	  	if ( $c->stash('now_write_file') ) {
+	  		my $writer = $c->stash($c->stash('now_write_file'));
 
-	  	if ( $self->stash('now_write_file') ) {
+	  		$writer->close( sub {
+	  			my ($w, ,$err, $oid) = @_;
 
-	  		warn "__________close_writer___________";
-	  		my $writer = $self->stash($self->stash('now_write_file'));
-
-	  		my $oid = $writer->close;#( sub {
-	  			# my ($w, $oid) = @_;
+	  			warn "_err in close : $err" if $err;
 	  			warn "_object id: $oid";
-	  			push @oid, $oid;
-	  			delete $self->stash->{$self->stash('now_write_file')};
-	  			delete $self->stash->{now_write_file};
-	  		# });
+	  			my $oids = $c->stash('oids');
+
+	  			push (@$oids, {
+	  				_id => {
+	  					'$oid' => $oid
+	  				},
+  					filename => $w->filename,
+  					chunkSize => $w->chunk_size,
+  					contentType => $w->content_type,
+	  			});
+
+	  			$c->stash(oids  => $oids );
+
+	  			delete $c->stash->{$c->stash('now_write_file')};
+	  			delete $c->stash->{now_write_file};
+	  		});
 	  	}
 
-	  	warn "_____________________________________________", $self->stash('now_write_file');
-
 	  	$single->on(body => sub {
-			my $single = shift;
-		
-			warn "__________________BODY";
-			# if ($single->headers->content_disposition =~ /filename="([^"]+)"/) {
-		 #  		warn "BODY ", $1;
-	  # 		}
-
-			# if ( $self->stash('now_write_file') ) {
-
-		 #  		warn "__________close_writer___________";
-		 #  		my $writer = $self->stash($self->stash('now_write_file'));
-
-		 #  		my $oid = $writer->close( sub {
-		 #  			my ($w, $oid) = @_;
-		 #  			warn "_object id: $oid";
-		 #  			push @oid, $oid;
-		 #  			delete $self->stash->{$self->stash('now_write_file')};
-		 #  			delete $self->stash->{now_write_file};
-		 #  		});
-		 #  	}
-
+			my $s = shift;
 
 			# Make sure we have the right part and replace "read" event
-			return unless $single->headers->content_disposition =~ /filename="([^"]+)"/;
+			return unless $s->headers->content_disposition =~ /filename="([^"]+)"/;
 
-			$self->app->log->debug($1 . ' now read.');
-			$self->stash( now_write_file => $1);
-			$self->stash("$1" => $self->mango->db->gridfs->writer->filename($1)->content_type('text/plain')->metadata({foo => 'bar'}));
-			warn "WRITE OBJ: ", $self->stash($1);
+			$c->app->log->debug($1 . ' now read.');
+			$c->stash( now_write_file => $1);
+			$c->stash("$1" => $c->mango->db->gridfs->writer
+				->filename($1)
+				->content_type($s->headers->content_type)
+				->metadata($s->headers->to_hash)
+			);
 
 			$single->unsubscribe('read')->on(read => sub {
-				warn "__________________READ";
 		  		my ($single, $bytes) = @_;
 		  		#read every chunk
-		  		my $writer = $self->stash($self->stash('now_write_file'));
-				warn "CURRENT WRITER IS CLOSED  FOR " . $self->stash('now_write_file') . "? - ", ( $writer->is_closed ? 'YES' : 'NO');
-		  		$writer->write($bytes);
-		  		# Log size of every chunk we receive
-		  		$self->app->log->debug(length($bytes) . ' bytes uploaded.');
+		  		my $writer = $c->stash($c->stash('now_write_file'));
+		  		if ($writer) {
+		  			$writer->write($bytes => sub {
+		  				my ($w, $err) = @_;
+
+		  				if ($err) {
+		  					warn "!!! ERROR: ", $err,dump $c->stash;
+		  				}
+		  			});
+		  			# Log size of every chunk we receive
+		  			$c->app->log->debug(length($bytes) . ' bytes uploaded.');
+		  		} else {
+		  			warn "!!! ERROR NO WRITER: ", dump $c->stash;
+		  		}
 			});
 	  	});
-	}) unless $self->req->is_finished;
-
-	# Second invocation, render response
-
-	warn "!!!!!!!FINISH!!!!!!!!", dump @oid;
-
-	$self->render(text => 'Upload was successful.');
+	}) unless $c->req->is_finished;
 }
 
 sub _read {
-	return 1;
+	my ($p,$c) = @_;
+	my $oid = bson_oid( $c->stash('object_id') );
+	$c->app->log->debug("download $oid");
+
+	# !!!!!!! non bloking mode!!!!!!!
+	$c->fs->reader->open($oid => sub {
+		my ($reader, $err) = @_;
+		my $filename = $reader->filename;
+			
+		if (!$err) {
+			$reader->slurp(sub {
+				my ($reader, $err, $data) = @_;
+
+				if ($err) {
+					$c->render(json => {
+						ok => 0,
+						msg => $err
+					});
+				} else {
+	        		$c->res->content->headers->add( 'Content-Type', "application/x-download;name=$filename");
+	        		$c->res->content->headers->add( 'Content-Disposition',"attachment;filename=$filename" );
+					$c->render( data => $data );
+				}
+			});
+		} else {
+			$c->render(json => {
+				ok => 0,
+				msg => $err
+			});
+		}
+	});
 }
 
 sub _list {
 	my ($p,$self) = @_;
-	$self->render_later;
 
-	#!!!!!!! non bloking !!!!!!!
+	#!!!!!!! non bloking mode!!!!!!!
 	$self->fs->list(sub {
 		my ($gridfs, $err, $names) = @_;
 
@@ -202,7 +243,14 @@ sub _list {
 }
 
 sub _delete {
-	return 1;
+	my ($p,$c) = @_;
+	my $oid = bson_oid( $c->stash('object_id') );
+
+	#!!!!!!! non bloking mode!!!!!!!
+	$c->fs->delete($oid => sub {
+    my ($gridfs, $err) = @_;
+    	$c->render(json => (!$err ? { msg => 'was deleted', ok => 1 } : { msg => $err, ok => 0 }) );
+  	});
 }
 
 1;
