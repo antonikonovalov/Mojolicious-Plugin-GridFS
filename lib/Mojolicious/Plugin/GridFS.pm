@@ -92,6 +92,7 @@ sub register {
 sub _create {
 	my ($p,$c) = @_;
 
+	Mojo::IOLoop->stream($c->tx->connection)->timeout(300);
 	unless($c->stash('oids')) {
 		$c->stash(oids => []);
 	}
@@ -118,8 +119,11 @@ sub _create {
   					contentType => $w->content_type,
 	  			});
 
-	  			delete $c->stash->{$c->stash('now_write_file')};
-				delete $c->stash->{now_write_file} if $c->stash->{now_write_file};
+	  			if ($c->stash('now_write_file')) {
+		  			delete $c->stash->{$c->stash('now_write_file')} if $c->stash->{$c->stash('now_write_file')};
+					delete $c->stash->{now_write_file};
+	  			}
+
 				delete $c->stash->{oids};
 
 	  			$c->render(json => {
@@ -156,8 +160,10 @@ sub _create {
 
 	  			$c->stash(oids  => $oids );
 
-	  			delete $c->stash->{$c->stash('now_write_file')};
-	  			delete $c->stash->{now_write_file};
+	  			if ($c->stash('now_write_file')) {
+		  			delete $c->stash->{$c->stash('now_write_file')} if $c->stash->{$c->stash('now_write_file')};
+		  			delete $c->stash->{now_write_file};
+	  			}
 	  		});
 	  	}
 
@@ -206,6 +212,7 @@ sub _read {
 	$c->fs->reader->open($oid => sub {
 		my ($reader, $err) = @_;
 		my $filename = $reader->filename;
+		my $content_type = $reader->content_type;
 			
 		if (!$err) {
 			$reader->slurp(sub {
@@ -217,7 +224,7 @@ sub _read {
 						msg => $err
 					});
 				} else {
-	        		$c->res->content->headers->add( 'Content-Type', "application/x-download;name=$filename");
+	        		$c->res->content->headers->add( 'Content-Type', "$content_type;name=$filename");
 	        		$c->res->content->headers->add( 'Content-Disposition',"attachment;filename=$filename" );
 					$c->render( data => $data );
 				}
